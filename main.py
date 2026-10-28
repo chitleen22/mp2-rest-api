@@ -6,7 +6,9 @@ from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
-from src import DataSetInfo, DatasetStorage, HealthResponse, setup_logging
+from src.utils import setup_logging
+
+from src import DatasetInfo, DatasetStorage, HealthResponse, setup_logging
 
 setup_logging(verbose=True)
 logger = logging.getLogger(__name__)
