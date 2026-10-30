@@ -8,6 +8,7 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
 from src.utils import setup_logging
 
+from data_pipeline import create_cleaning_report, process_data, validate_dataframe
 from src import (
     DatasetInfo,
     DatasetStorage,
