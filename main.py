@@ -8,12 +8,22 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
 from src.utils import setup_logging
 
-from src import DatasetInfo, DatasetStorage, HealthResponse, setup_logging
+from src import (
+    DatasetInfo,
+    DatasetStorage,
+    HealthResponse,
+    ProcessConfig,
+    ProcessingReport,
+    log_requests,
+    setup_logging,
+)
+
 
 setup_logging(verbose=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Data Processing API", version="1.0.0")
+app.middleware("http")(log_requests)
 storage = DatasetStorage()
 
 
@@ -68,3 +78,65 @@ def get_dataset(dataset_id: int, limit: int = Query(default=100, ge=1)):
     logger.info("Retrieved dataset: id=%d, returned_rows=%d",
                 dataset_id, len(records))
     return {"id": dataset_id, "data": records, "total_rows": len(df)}
+
+
+@app.post(
+    "/datasets/{dataset_id}/process",
+    response_model=ProcessingReport,
+)
+def process_dataset(dataset_id: int, config: ProcessConfig):
+    """Validate and process a stored dataset using MP1 functions."""
+    # 1. Retrieve a copy; 404 if missing (kept outside the try block)
+    df = storage.get(dataset_id)
+    if df is None:
+        logger.warning("Dataset not found: %d", dataset_id)
+        raise HTTPException(
+            status_code=404, detail=f"Dataset {dataset_id} not found.")
+
+    # 2. Convert request model to the dict structure MP1 expects
+    config_dict = config.model_dump()
+    validation = config_dict["validation"]
+
+    # 3. Every numeric column must exist
+    missing_cols = [c for c in validation["numeric_columns"]
+                    if c not in df.columns]
+    if missing_cols:
+        logger.warning(
+            "Numeric columns not found in dataset %d: %s", dataset_id, missing_cols)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Numeric columns not found: {missing_cols}",
+        )
+
+    try:
+        # 4. Validate
+        validated = validate_dataframe(
+            df,
+            validation["required_columns"],
+            validation["numeric_columns"],
+        )
+        validation_removed = len(df) - len(validated)
+
+        # 5. Copy before processing so the report can compare before/after
+        before = validated.copy()
+        processed = process_data(validated, config_dict)
+
+        # 6. Cleaning report
+        report = create_cleaning_report(before, processed)
+    except ValueError as error:
+        logger.warning("Processing failed for dataset %d: %s",
+                       dataset_id, error)
+        raise HTTPException(status_code=400, detail=str(error))
+
+    # 7. Only update storage once everything succeeded
+    storage.update(dataset_id, processed)
+    logger.info(
+        "Processed dataset: id=%d, validation_removed=%d, rows_before=%d, rows_after=%d",
+        dataset_id, validation_removed, len(before), len(processed),
+    )
+
+    return {
+        "id": dataset_id,
+        "validation_rows_removed": validation_removed,
+        "cleaning_report": report,
+    }
